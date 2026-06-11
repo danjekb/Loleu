@@ -29,6 +29,7 @@ IMEI=""
 SERIAL_NO=""
 LATEST_FIRMWARE=""
 ZIP_FILE=""
+IS_MANUAL_VERSION=false
 
 PREPARE_SCRIPT()
 {
@@ -56,6 +57,17 @@ PREPARE_SCRIPT()
 
     if ! $IGNORE_SOURCE; then
         _CHECK_NON_EMPTY_PARAM "SOURCE_FIRMWARE" "$SOURCE_FIRMWARE" || exit 1
+        
+        # Jeśli przekazano dodatkowy argument z GitHub Actions, przebudowujemy SOURCE_FIRMWARE
+        if [ "${#EXTRA_FIRMWARES[@]}" -ge 1 ] && [ -n "${EXTRA_FIRMWARES[0]}" ]; then
+            local MANUAL_VERSION="${EXTRA_FIRMWARES[0]}"
+            # Wyciągamy model i CSC ze starej zmiennej (np. z SM-A528B:XEO robimy SM-A528B:XEO:WERSJA)
+            local BASE_MODEL_CSC=$(echo "$SOURCE_FIRMWARE" | cut -d':' -f1,2)
+            SOURCE_FIRMWARE="${BASE_MODEL_CSC}:${MANUAL_VERSION}"
+            IS_MANUAL_VERSION=true
+            EXTRA_FIRMWARES=()
+        fi
+
         FIRMWARES+=("$SOURCE_FIRMWARE")
         IFS=':' read -r -a SOURCE_EXTRA_FIRMWARES <<< "$SOURCE_EXTRA_FIRMWARES"
         if [ "${#SOURCE_EXTRA_FIRMWARES[@]}" -ge 1 ]; then
@@ -127,10 +139,18 @@ PREPARE_SCRIPT "$@"
 for i in "${FIRMWARES[@]}"; do
     PARSE_FIRMWARE_STRING "$i" || exit 1
 
-    LATEST_FIRMWARE="$(GET_LATEST_FIRMWARE "$MODEL" "$CSC")"
-    if [ ! "$LATEST_FIRMWARE" ]; then
-        LOGE "Latest available firmware could not be fetched"
-        exit 1
+    # Jeśli wymuszono wersję ręcznie, przypisujemy ją bezpośrednio jako LATEST_FIRMWARE
+    if $IS_MANUAL_VERSION && [ "$i" == "$SOURCE_FIRMWARE" ]; then
+        # Funkcja PARSE_FIRMWARE_STRING wyciąga wersję do zmiennej, jeśli istnieje w ciągu znaków
+        # Wykorzystujemy przekazany argument bezpośrednio jako wersję docelową do pobrania
+        LATEST_FIRMWARE=$(echo "$i" | cut -d':' -f3)
+        LOG "- Wymuszono pobieranie określonej wersji SOURCE: $LATEST_FIRMWARE"
+    else
+        LATEST_FIRMWARE="$(GET_LATEST_FIRMWARE "$MODEL" "$CSC")"
+        if [ ! "$LATEST_FIRMWARE" ]; then
+            LOGE "Latest available firmware could not be fetched"
+            exit 1
+        fi
     fi
 
     LOG_STEP_IN "- Processing $MODEL firmware with $CSC CSC"
@@ -169,7 +189,7 @@ for i in "${FIRMWARES[@]}"; do
     # Anan's samloader stores its logs in the current working directory, let's move into OUT_DIR just for this time
     (
     cd "$OUT_DIR"
-    samloader -m "$MODEL" -r "$CSC" -i "$IMEI" -s "$SERIAL_NO" download -O "$ODIN_DIR/${MODEL}_${CSC}" 1> /dev/null || exit 1
+    samloader -m "$MODEL" -r "$CSC" -i "$IMEI" -s "$SERIAL_NO" download -v "$LATEST_FIRMWARE" -O "$ODIN_DIR/${MODEL}_${CSC}" 1> /dev/null || exit 1
     )
 
     ZIP_FILE="$(find "$ODIN_DIR/${MODEL}_${CSC}" -name "*.zip" | sort -r | head -n 1)"
